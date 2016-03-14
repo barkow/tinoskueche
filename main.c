@@ -3,7 +3,7 @@
 #include <avr/sleep.h>
 #include <avr/boot.h>
 
-#define TICKSPERSECOND 1000
+#define TICKSPERSECOND 61
 #define POWERDOWNTIMEOUT 10*TICKSPERSECOND
 
 volatile static uint16_t ticks = 0;
@@ -11,7 +11,7 @@ volatile static uint16_t ticks = 0;
 volatile int16_t encoderPosition = 0; // Absolute Encoder Position
 
 void USART_Init(void){
-	#define BAUD 115200
+	#define BAUD 57600
 	#include <util/setbaud.h>
 	UBRR0H = UBRRH_VALUE;
 	UBRR0L = UBRRL_VALUE;
@@ -46,11 +46,10 @@ ISR(TIMER0_OVF_vect){
 #ifdef DEBUG
 	static uint16_t cnt = 0;
 #endif
-	readEncoder();
 	ticks++;
 #ifdef DEBUG
 	cnt++;
-	if (cnt >= 1000){
+	if (cnt >= 1*TICKSPERSECOND){
 		cnt = 0;
 		PORTB ^= 1 << PINB5;
 	}
@@ -154,7 +153,7 @@ int main(void){
 	static uint16_t lastUserAction = 0;
 
 	//Timer initialisieren
-	TCCR0B = 0x3 << CS00;			//divide by 64 --> 16MHz / 256 (8bit overflow) / 64 ~ 1ms
+	TCCR0B = 0x5 << CS00;			//divide by 64 --> 16MHz / 256 (8bit overflow) / 1024 ~ 61 interrupts pro s
 	TIMSK0 = 1 << TOIE0;			//enable timer interrupt
 
 #ifdef DEBUG
@@ -183,6 +182,7 @@ int main(void){
 	sei();
 
 	while(1){
+		readEncoder();
 		//Prüfen, ob sich Encoderposition verändert hat
 		if (encoderPositionOld != encoderPosition){
 			encoderPositionOld = encoderPosition;
