@@ -2,13 +2,14 @@
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 #include <avr/boot.h>
+#include <avr/delay.h>
 
 #define TICKSPERSECOND 61
 #define POWERDOWNTIMEOUT 10*TICKSPERSECOND
 
 volatile static uint16_t ticks = 0;
 
-volatile int16_t encoderPosition = 0; // Absolute Encoder Position
+volatile uint8_t encoderPosition = 0; // Absolute Encoder Position
 
 void USART_Init(void){
 	#define BAUD 57600
@@ -32,28 +33,56 @@ void USART_Transmit( unsigned char data ) {
 }
 
 static inline void readEncoder(){
-	//Siehe: http://www.dse-faq.elektronik-kompendium.de/dse-faq.htm#F.29
+	/*//Siehe: http://www.dse-faq.elektronik-kompendium.de/dse-faq.htm#F.29
 	int8_t encoderTable[4][4] = {{0,1,-1,0},{-1,0,0,1},{1,0,0,-1},{0,-1,1,0}};
 	uint8_t encoderNewValue;
 	static uint8_t encoderLastValue;
 
 	encoderNewValue = (PIND >> PIND2) & 0x03;
+	USART_Transmit(0xaa);
+	//USART_Transmit(DDRD);
+	//USART_Transmit(PORTD);
+	//USART_Transmit(0xbb);
+	USART_Transmit(encoderNewValue);
+	USART_Transmit(encoderLastValue);
+	USART_Transmit(encoderPosition);
 	encoderPosition += encoderTable[encoderLastValue][encoderNewValue];
+	USART_Transmit(encoderPosition);
+	USART_Transmit(0xbb);
 	encoderLastValue = encoderNewValue;
+*/
+	static uint8_t clkLastValue = 0;
+	uint8_t clkValue;
+	uint8_t dtValue;
+
+	uint8_t pind = PIND;
+	clkValue = (pind & (1  << PIND3)) != 0;
+	dtValue = (pind & (1  << PIND2)) != 0;
+	//USART_Transmit((pind >> 2) & 0x03);
+	//Fallende Flanke an clk erkannt
+	if (clkValue < clkLastValue){
+		if (dtValue != clkValue){
+			encoderPosition--;
+		}
+		else {
+			encoderPosition++;
+		}
+	}
+	clkLastValue = clkValue;
+
 }
 
 ISR(TIMER0_OVF_vect){
-#ifdef DEBUG
 	static uint16_t cnt = 0;
-#endif
+
 	ticks++;
-#ifdef DEBUG
+	//readEncoder();
 	cnt++;
 	if (cnt >= 1*TICKSPERSECOND){
 		cnt = 0;
-		PORTB ^= 1 << PINB5;
+		//PORTB ^= 1 << PINB5;
+		//encoderPosition++;
 	}
-#endif
 }
 
 ISR(PCINT2_vect){
@@ -64,8 +93,8 @@ void SPI_MasterInit(void) {
 	/* Set MOSI and SCK output, all others input */
 	DDRB |= (1 << PINB3) | (1 << PINB5);
 	/* Enable SPI, Master, set clock rate fck/2 */
-	SPCR = (1 << SPE) | (1 << MSTR) | (0 << SPR0);
-	SPSR = (1 << SPI2X);
+	SPCR = (1 << SPE) | (1 << MSTR) | (0 << SPR0) | (0 << CPOL) | (0 << CPHA);
+	SPSR = (0 << SPI2X);
 }
 
 void SPI_MasterTransmit(char cData){
@@ -78,14 +107,9 @@ void SPI_MasterTransmit(char cData){
 void Max7219Send(uint8_t address, uint8_t data){
 	//CS low
 	PORTB &= ~(1 << PINB2);
-#ifndef DEBUG
 	SPI_MasterTransmit(address & 0x0f);
 	SPI_MasterTransmit(data);
-#endif
-#ifdef DEBUG
-	USART_Transmit(address & 0x0f);
-	USART_Transmit(data);
-#endif
+
 	//CS high
 	PORTB |= (1 << PINB2);
 }
@@ -102,25 +126,38 @@ void Max7219Init(void){
 	//CS initialisieren
 	DDRB |= (1 << PINB2);
 
-#ifndef DEBUG
+//#ifndef DEBUG
 	SPI_MasterInit();
-#endif
+//#endif
 	//BCD Decode Mode
 	Max7219Send(0x09, 0xff);
 	//Maximum Intensity
 	Max7219Send(0x0a, 0x0f);
+	//Scan Limit 8
+	Max7219Send(0x0b, 0x07);
+	//Blank all segments
+	for(uint8_t i = 0; i < 8; i++){
+		Max7219Send(i + 1, 0x0f);
+	}
+	//Scan Limit 4
+	Max7219Send(0x0b, 0x03);
 	Max7219DisableShutdown();
 }
 
 void Max7219Display(uint16_t value){
 	uint8_t digit;
-	for (int i = 0; i < 5; i++){
+	uint8_t i;
+	for (i = 0; i < 4; i++){
 		digit = value % 10;
 		Max7219Send(i + 1, digit);
 		value = value / 10;
 		if (value == 0){
 			break;
 		}
+	}
+	i++;
+	for (; i < 4; i++){
+		Max7219Send(i+1, 0x0f);
 	}
 }
 
@@ -149,7 +186,7 @@ void powerDown(void){
 }
 
 int main(void){
-	static int8_t encoderPositionOld = 0;
+	static uint8_t encoderPositionOld = 0;
 	static uint16_t lastUserAction = 0;
 
 	//Timer initialisieren
@@ -163,19 +200,23 @@ int main(void){
 
 	//7-Segment Anzeige initialisieren
 	Max7219Init();
+	Max7219Display(encoderPosition);
 
 	//Encoder Eingänge initialisieren
 	//Pin D2 und D3 als Input mit Pullup
-	DDRD &= ~((1 << PIND2) || (1 << PIND3));
-	PORTD |= ((1 << PIND2) || (1 << PIND3));
+	DDRD &= ~((1 << PIND2) | (1 << PIND3));
+	USART_Transmit(PORTD);
+	PORTD |= ((1 << PIND2) | (1 << PIND3));
+	USART_Transmit(PORTD);
 
 #ifdef DEBUG
 	USART_Transmit('A');
 	USART_Transmit('B');
 	USART_Transmit('C');
 	//LED
-	DDRB |= 1 << PINB5;
-	PORTB &= ~(1 << PINB5);
+	//DDRB |= 1 << PINB5;
+	//PORTB &= ~(1 << PINB5);
+
 #endif
 
 	//Interrupts aktivieren
@@ -188,6 +229,10 @@ int main(void){
 			encoderPositionOld = encoderPosition;
 			//Zeitpunkt des letzten User Inputs festhalten
 			lastUserAction = ticks;
+
+#ifdef DEBUG
+			USART_Transmit(encoderPosition);
+#endif
 
 			//Neuen Wert ausgeben auf 7-Segment Anzeige ausgeben
 			Max7219Display(encoderPosition);
